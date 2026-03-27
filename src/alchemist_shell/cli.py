@@ -1,4 +1,6 @@
 import asyncio
+import nest_asyncio
+from pathlib import Path
 import typer
 from functools import wraps
 from typing import Optional, Dict, Any, Type
@@ -10,19 +12,11 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# New common imports for the namespace
+nest_asyncio.apply()
+
 from sqlalchemy import (
-    select, 
-    insert, 
-    update, 
-    delete, 
-    func, 
-    and_, 
-    or_, 
-    not_, 
-    desc, 
-    asc, 
-    text
+    select, insert, update, delete, 
+    func, and_, or_, not_, desc, asc, text
 )
 
 from .discovery import discover_models
@@ -61,6 +55,19 @@ def make_sync_proxy(db: AsyncSession) -> Any:
             return attr
     return AsyncProxy(db)
 
+def version_callback(value: bool):
+    if value:
+        from . import __version__
+        console.print(f"Alchemist Shell v{__version__}")
+        raise typer.Exit()
+
+@app.callback()
+def common(
+    version: Optional[bool] = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True)
+):
+    """The Modern SQLAlchemy Shell."""
+    pass
+
 @app.command()
 def shell(
     db_url: Optional[str] = typer.Option(None, "--db-url", "-u"),
@@ -92,29 +99,31 @@ def shell(
 
     active_db = make_sync_proxy(db) if is_async else db
 
-    # Injected common SQLAlchemy toolkit into namespace
     namespace: Dict[str, Any] = {
         "db": active_db, 
         "engine": engine, 
         "inspect": inspect_model,
         "sql_on": lambda: engine.__setattr__('echo', True),
         "sql_off": lambda: engine.__setattr__('echo', False),
-        "select": select,
-        "insert": insert,
-        "update": update,
-        "delete": delete,
-        "func": func,
-        "and_": and_,
-        "or_": or_,
-        "not_": not_,
-        "desc": desc,
-        "asc": asc,
-        "text": text,
+        "select": select, "insert": insert, "update": update,
+        "delete": delete, "func": func, "and_": and_,
+        "or_": or_, "not_": not_, "desc": desc,
+        "asc": asc, "text": text,
         **models
     }
 
     ipshell = InteractiveShellEmbed(config=cfg, user_ns=namespace, colors="neutral", banner1="")
     
+    # Auto-inspection formatter
+    def alchemist_display_formatter(obj, p, cycle):
+        if cycle: return p.text(repr(obj))
+        if hasattr(obj, "__table__"):
+            inspect_model(obj)
+        else:
+            p.text(repr(obj))
+
+    ipshell.display_formatter.formatters['text/plain'].for_type(object, alchemist_display_formatter)
+
     table = Table(show_header=True, header_style="bold blue", box=None)
     table.add_column("Model", style="magenta")
     table.add_column("Table", style="dim")
@@ -125,7 +134,11 @@ def shell(
     console.print(table)
     db_name = engine.url.database or "memory"
     console.print(f"[bold cyan]Connected:[/bold cyan] [white]{db_name}[/white] [dim]({mode_label})[/dim]")
-    console.print("[dim]Common imports (select, func, etc.) are pre-loaded.[/dim]\n")
+    console.print("[dim]Common imports pre-loaded. Type a model instance to view it.[/dim]\n")
+
+    history_file = Path.home() / ".alchemist_history"
+    if not history_file.exists(): history_file.touch()
+    ipshell.init_history(str(history_file))
 
     ipshell()
 
