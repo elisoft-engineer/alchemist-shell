@@ -27,9 +27,6 @@ The current workflow for inspecting SQLAlchemy projects in the terminal is broke
 - **Auto-Discovery**  
   Recursively scans your project and injects all models into the namespace instantly.
 
-- **Smart Proxying**  
-  Call `db.commit()`, `db.add()`, and `db.rollback()` as sync methods. Async is handled under the hood.
-
 - **Pre-loaded Toolkit**  
   `select`, `func`, `text`, and other SQLAlchemy essentials are available on startup.
 
