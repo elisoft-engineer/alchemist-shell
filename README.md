@@ -48,21 +48,29 @@ pip install alchemist-shell
 
 ## 🧪 The Workflow
 
-### 1. Zero-Await Session Management
+### 1. Initialize the shell
 
-Interact with your session without the async tax:
+Interact with your db having to manually load your session:
+
+```bash
+alchemist shell
+```
+
+### 2. Run queries directly on the terminal
+
+All your SQLAlchemy models are autodiscovered and imported:
 
 ```python
 alchemist ❯ user = User(username="alchemist")
-alchemist ❯ db.add(user)
-alchemist ❯ db.commit()
+alchemist ❯ await db.add(user)
+alchemist ❯ await db.commit()
 ```
 
 ---
 
 ### 2. Immediate Feedback
 
-Stop calling `print()` or `vars()`. Just evaluate the variable:
+View your database objects as a formated table without creating a sophisticated `__repr__` method:
 
 ```python
 alchemist ❯ user
@@ -76,7 +84,8 @@ alchemist ❯ user
 Full auto-await support when you need complex queries:
 
 ```python
-alchemist ❯ orders = (await db.execute(select(Order))).scalars().all()
+alchemist ❯ results = await db.execute(select(Order))
+alchemist ❯ orders = results.scalars().all()
 ```
 
 ---
