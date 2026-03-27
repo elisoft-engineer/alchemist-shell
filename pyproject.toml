@@ -1,18 +1,20 @@
 [project]
 name = "alchemist-shell"
 version = "0.1.0"
-description = ""
+description = "The missing interactive shell for SQLAlchemy projects."
 authors = [
     {name = "Elkana Maina",email = "elisoft.engineer@gmail.com"}
 ]
 readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0.0",
     "typer>=0.9.0",
     "ipython>=8.0.0",
     "rich>=13.0.0",
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0",
+    "nest-asyncio>=1.5.0"
 ]
 
 [tool.poetry]
