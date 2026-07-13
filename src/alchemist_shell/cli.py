@@ -18,13 +18,10 @@ from sqlalchemy.engine import Row
 
 nest_asyncio.apply()
 
-from sqlalchemy import (
-    select, insert, update, delete,
-    func, and_, or_, not_, desc, asc, text
-)
+from sqlalchemy import select, insert, update, delete, func, and_, or_, not_, desc, asc, text
 
 from .discovery import discover_models
-from .inspect import inspect_model
+from .inspect import inspect_model, inspect_collection
 from .session import get_session
 
 console = Console()
@@ -47,8 +44,14 @@ class AlchemistPrompts(Prompts):
     def out_prompt_tokens(self):
         return []
 
-    def continuation_prompt_tokens(self, width=None):
-        return [(Token.Prompt, "          ❯ ")]
+    def continuation_prompt_tokens(
+        self,
+        width: Optional[int] = None,
+        *,
+        lineno: Optional[int] = None,
+        wrap_count: Optional[int] = None,
+    ):
+        return [(Token.Prompt, "        ❯ ")]
 
 
 def make_sync_proxy(db: AsyncSession) -> Any:
@@ -59,6 +62,7 @@ def make_sync_proxy(db: AsyncSession) -> Any:
         def __getattr__(self, name: str) -> Any:
             attr = getattr(self._obj, name)
             if callable(attr):
+
                 @wraps(attr)
                 def wrapper(*args: Any, **kwargs: Any) -> Any:
                     result = attr(*args, **kwargs)
@@ -69,19 +73,26 @@ def make_sync_proxy(db: AsyncSession) -> Any:
                         except RuntimeError:
                             # ─── PYTHON 3.14+ NEST_ASYNCIO TIMEOUT PATCH ───
                             orig_current_task = asyncio.current_task
-                            
+
                             class DummyTask:
-                                def cancel(self, *args, **kwargs): return False
-                                def cancelling(self): return 0
-                                def uncancel(self): return 0
+                                def cancel(self, *args, **kwargs):
+                                    return False
+
+                                def cancelling(self):
+                                    return 0
+
+                                def uncancel(self):
+                                    return 0
 
                             # Provide a structural fallback if Python 3.14 returns None
-                            patched_task_provider = lambda loop=None: orig_current_task(loop) or DummyTask()
-                            
+                            patched_task_provider = lambda loop=None: (
+                                orig_current_task(loop) or DummyTask()
+                            )
+
                             asyncio.current_task = patched_task_provider
                             if hasattr(asyncio, "tasks"):
                                 asyncio.tasks.current_task = patched_task_provider
-                                
+
                             try:
                                 return asyncio.get_event_loop().run_until_complete(result)
                             finally:
@@ -90,6 +101,7 @@ def make_sync_proxy(db: AsyncSession) -> Any:
                                 if hasattr(asyncio, "tasks"):
                                     asyncio.tasks.current_task = orig_current_task
                     return result
+
                 return wrapper
             return attr
 
@@ -99,6 +111,7 @@ def make_sync_proxy(db: AsyncSession) -> Any:
 def version_callback(value: bool):
     if value:
         from . import __version__
+
         console.print(f"Alchemist Shell v{__version__}")
         raise typer.Exit()
 
@@ -107,7 +120,7 @@ def version_callback(value: bool):
 def common(
     version: Optional[bool] = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True
-    )
+    ),
 ):
     """The Modern SQLAlchemy Shell."""
     pass
@@ -118,6 +131,13 @@ def alchemist_display_formatter(obj, p, cycle):
     if cycle:
         return p.text(repr(obj))
 
+    if isinstance(obj, list) and len(obj) > 0:
+        first = obj[0]
+        is_model_row = isinstance(first, Row) and len(first) == 1 and hasattr(first[0], "__table__")
+        if hasattr(first, "__table__") or is_model_row:
+            inspect_collection(obj)
+            return None
+
     # Handle SQLAlchemy Row
     if isinstance(obj, Row):
         if len(obj) == 1 and hasattr(obj[0], "__table__"):
@@ -127,7 +147,6 @@ def alchemist_display_formatter(obj, p, cycle):
 
     # Handle SQLAlchemy model instances
     if hasattr(obj, "__table__"):
-        # ✅ Direct Rich rendering (no ANSI stripping)
         inspect_model(obj)
         return None
 
@@ -138,7 +157,7 @@ def alchemist_display_formatter(obj, p, cycle):
 def shell(
     db_url: Optional[str] = typer.Option(None, "--db-url", "-u"),
     path: str = typer.Option(".", "--path", "-p"),
-    env: Optional[str] = typer.Option(None, "--env", "-e")
+    env: Optional[str] = typer.Option(None, "--env", "-e"),
 ) -> None:
     with console.status("[cyan]Scanning modules...[/cyan]"):
         models: Dict[str, Type[Any]] = discover_models(path)
@@ -169,20 +188,25 @@ def shell(
         "db": active_db,
         "engine": engine,
         "inspect": inspect_model,
+        "inspect_all": inspect_collection,
         "sql_on": lambda: engine.__setattr__("echo", True),
         "sql_off": lambda: engine.__setattr__("echo", False),
-        "select": select, "insert": insert, "update": update,
-        "delete": delete, "func": func, "and_": and_,
-        "or_": or_, "not_": not_, "desc": desc,
-        "asc": asc, "text": text,
-        **models
+        "select": select,
+        "insert": insert,
+        "update": update,
+        "delete": delete,
+        "func": func,
+        "and_": and_,
+        "or_": or_,
+        "not_": not_,
+        "desc": desc,
+        "asc": asc,
+        "text": text,
+        **models,
     }
 
     ipshell = InteractiveShellEmbed(
-        config=cfg,
-        user_ns=namespace,
-        colors=get_ipython_colors(),  # ✅ OS-aware colors
-        banner1=""
+        config=cfg, user_ns=namespace, colors=get_ipython_colors(), banner1=""
     )
 
     formatter = ipshell.display_formatter.formatters["text/plain"]
@@ -191,8 +215,8 @@ def shell(
     for model_cls in models.values():
         formatter.for_type(model_cls, alchemist_display_formatter)
 
-    # Register formatter for SQLAlchemy Row
     formatter.for_type(Row, alchemist_display_formatter)
+    formatter.for_type(list, alchemist_display_formatter)
 
     # --- UI ---
     table = Table(show_header=True, header_style="bold blue", box=None)
@@ -206,8 +230,12 @@ def shell(
     console.print(table)
 
     db_name = engine.url.database or "memory"
-    console.print(f"[bold cyan]Connected:[/bold cyan] [white]{db_name}[/white] [dim]({mode_label})[/dim]")
-    console.print("[dim]Common imports pre-loaded. Type a model instance to view it.[/dim]\n")
+    console.print(
+        f"[bold cyan]Connected:[/bold cyan] [white]{db_name}[/white] [dim]({mode_label})[/dim]"
+    )
+    console.print(
+        "[dim]Common imports pre-loaded. Type a model instance or list to view it.[/dim]\n"
+    )
 
     history_file = Path.home() / ".alchemist_history"
     if not history_file.exists():
