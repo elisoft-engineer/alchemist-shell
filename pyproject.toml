@@ -1,6 +1,6 @@
 [project]
 name = "alchemist-shell"
-version = "0.1.1"
+version = "0.1.2"
 description = "The missing interactive shell for SQLAlchemy projects."
 authors = [
     {name = "Elkana Maina",email = "elisoft.engineer@gmail.com"}
