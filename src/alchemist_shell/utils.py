@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
+
 def find_and_load_env(env_file: Optional[str] = None) -> None:
     """Searches for and loads the appropriate .env file."""
     if env_file and Path(env_file).exists():
