@@ -67,7 +67,28 @@ def make_sync_proxy(db: AsyncSession) -> Any:
                             asyncio.get_running_loop()
                             return result
                         except RuntimeError:
-                            return asyncio.get_event_loop().run_until_complete(result)
+                            # ─── PYTHON 3.14+ NEST_ASYNCIO TIMEOUT PATCH ───
+                            orig_current_task = asyncio.current_task
+                            
+                            class DummyTask:
+                                def cancel(self, *args, **kwargs): return False
+                                def cancelling(self): return 0
+                                def uncancel(self): return 0
+
+                            # Provide a structural fallback if Python 3.14 returns None
+                            patched_task_provider = lambda loop=None: orig_current_task(loop) or DummyTask()
+                            
+                            asyncio.current_task = patched_task_provider
+                            if hasattr(asyncio, "tasks"):
+                                asyncio.tasks.current_task = patched_task_provider
+                                
+                            try:
+                                return asyncio.get_event_loop().run_until_complete(result)
+                            finally:
+                                # Revert back safely to avoid global side-effects
+                                asyncio.current_task = orig_current_task
+                                if hasattr(asyncio, "tasks"):
+                                    asyncio.tasks.current_task = orig_current_task
                     return result
                 return wrapper
             return attr
