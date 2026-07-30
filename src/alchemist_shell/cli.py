@@ -173,9 +173,9 @@ def shell(
 
     cfg = Config()
     cfg.InteractiveShell.autoawait = True
-    cfg.InteractiveShell.display_banner = False
     cfg.InteractiveShell.quiet = True
-    cfg.TerminalInteractiveShell.display_completions_help = False
+    cfg.TerminalInteractiveShell.display_banner = False
+    cfg.TerminalInteractiveShell.display_completions = "readline"
     cfg.TerminalInteractiveShell.prompts_class = AlchemistPrompts
     cfg.TerminalInteractiveShell.term_title = False
     cfg.IPCompleter.greedy = True
