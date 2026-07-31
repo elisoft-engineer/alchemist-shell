@@ -29,7 +29,7 @@ def discover_models(start_dir: str = ".") -> Dict[str, Type[Any]]:
                     if obj.__module__.startswith("sqlalchemy"):
                         continue
                     found_models[obj.__name__] = obj
-        except ImportError, AttributeError:
+        except (ImportError, AttributeError):
             continue
 
     return found_models
