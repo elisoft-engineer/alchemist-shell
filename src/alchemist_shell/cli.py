@@ -44,10 +44,12 @@ console = Console()
 app = typer.Typer(name="alchemist", help="The Modern SQLAlchemy Shell")
 
 # Custom prompt_toolkit styling
-ALCHEMIST_STYLE = Style.from_dict({
-    "prompt": "bold #98c379",
-    "marker": "bold #61afef",
-})
+ALCHEMIST_STYLE = Style.from_dict(
+    {
+        "prompt": "bold #98c379",
+        "marker": "bold #61afef",
+    }
+)
 
 
 def make_sync_proxy(db: AsyncSession) -> Any:
@@ -58,6 +60,7 @@ def make_sync_proxy(db: AsyncSession) -> Any:
         def __getattr__(self, name: str) -> Any:
             attr = getattr(self._obj, name)
             if callable(attr):
+
                 @wraps(attr)
                 def wrapper(*args: Any, **kwargs: Any) -> Any:
                     result = attr(*args, **kwargs)
@@ -69,6 +72,7 @@ def make_sync_proxy(db: AsyncSession) -> Any:
                             loop = asyncio.get_event_loop()
                             return loop.run_until_complete(result)
                     return result
+
                 return wrapper
             return attr
 
@@ -91,11 +95,7 @@ def display_result(result: Any) -> None:
 
     if items and len(items) > 0:
         first = items[0]
-        is_model_row = (
-            isinstance(first, Row)
-            and len(first) == 1
-            and hasattr(first[0], "__table__")
-        )
+        is_model_row = isinstance(first, Row) and len(first) == 1 and hasattr(first[0], "__table__")
         if hasattr(first, "__table__") or is_model_row:
             inspect_collection(items)
             return
@@ -128,12 +128,12 @@ def execute_code(code_str: str, namespace: Dict[str, Any]) -> None:
         parsed = ast.parse(code_str, mode="eval")
         compiled = compile(parsed, "<alchemist>", "eval")
         result = eval(compiled, namespace)
-        
+
         # If the result is a coroutine, resolve it
         if asyncio.iscoroutine(result):
             loop = asyncio.get_event_loop()
             result = loop.run_until_complete(result)
-            
+
         display_result(result)
         namespace["_"] = result
 
@@ -160,6 +160,7 @@ def execute_code(code_str: str, namespace: Dict[str, Any]) -> None:
 def version_callback(value: bool):
     if value:
         from . import __version__
+
         console.print(f"Alchemist Shell v{__version__}")
         raise typer.Exit()
 
@@ -249,7 +250,7 @@ def shell(
         try:
             user_input = session.prompt(prompt_message)
             execute_code(user_input, namespace)
-        except (KeyboardInterrupt, EOFError):
+        except KeyboardInterrupt, EOFError:
             console.print("\n[dim]Goodbye![/dim]")
             break
 
