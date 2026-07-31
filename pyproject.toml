@@ -1,6 +1,6 @@
 [project]
 name = "alchemist-shell"
-version = "0.1.6"
+version = "0.1.7"
 description = "The missing interactive shell for SQLAlchemy projects."
 authors = [
     {name = "Elkana Maina",email = "elisoft.engineer@gmail.com"}
@@ -11,10 +11,11 @@ requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0.0",
     "typer>=0.15.0",
-    "ipython>=8.5.0",
     "rich>=13.0.0",
     "python-dotenv>=1.0.0",
-    "nest-asyncio>=1.5.0"
+    "nest-asyncio>=1.5.0",
+    "prompt-toolkit (>=3.0.0,<4.0.0)",
+    "jedi (>=0.20.0,<0.21.0)"
 ]
 
 [tool.poetry]
