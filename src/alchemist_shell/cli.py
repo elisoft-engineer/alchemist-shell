@@ -13,12 +13,11 @@ from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.styles import Style
-
-from alchemist_shell.completers import JediCompleter
 
 nest_asyncio.apply()
 
@@ -52,6 +51,13 @@ ALCHEMIST_STYLE = Style.from_dict(
 )
 
 
+def run_async(coro: Any) -> Any:
+    """Executes a coroutine wrapped inside an explicit task to support Python 3.14+ timeouts."""
+    loop = asyncio.get_event_loop()
+    task = loop.create_task(coro)
+    return loop.run_until_complete(task)
+
+
 def make_sync_proxy(db: AsyncSession) -> Any:
     class AsyncProxy:
         def __init__(self, obj: AsyncSession):
@@ -65,12 +71,7 @@ def make_sync_proxy(db: AsyncSession) -> Any:
                 def wrapper(*args: Any, **kwargs: Any) -> Any:
                     result = attr(*args, **kwargs)
                     if asyncio.iscoroutine(result):
-                        try:
-                            asyncio.get_running_loop()
-                            return result
-                        except RuntimeError:
-                            loop = asyncio.get_event_loop()
-                            return loop.run_until_complete(result)
+                        return run_async(result)
                     return result
 
                 return wrapper
@@ -129,10 +130,9 @@ def execute_code(code_str: str, namespace: Dict[str, Any]) -> None:
         compiled = compile(parsed, "<alchemist>", "eval")
         result = eval(compiled, namespace)
 
-        # If the result is a coroutine, resolve it
+        # If the result is a coroutine, resolve it inside a task
         if asyncio.iscoroutine(result):
-            loop = asyncio.get_event_loop()
-            result = loop.run_until_complete(result)
+            result = run_async(result)
 
         display_result(result)
         namespace["_"] = result
@@ -140,14 +140,12 @@ def execute_code(code_str: str, namespace: Dict[str, Any]) -> None:
     except SyntaxError:
         # Fall back to executing multi-line statements / assignments
         try:
-            # Handle top-level await by wrapping in an async block if needed
             if "await " in code_str:
                 async_code = f"async def __alchemist_async_exec():\n" + "\n".join(
                     f"    {line}" for line in code_str.splitlines()
                 )
                 exec(async_code, namespace)
-                loop = asyncio.get_event_loop()
-                loop.run_until_complete(namespace["__alchemist_async_exec"]())
+                run_async(namespace["__alchemist_async_exec"]())
                 namespace.pop("__alchemist_async_exec", None)
             else:
                 exec(code_str, namespace)
@@ -239,7 +237,7 @@ def shell(
 
     session = PromptSession(
         history=FileHistory(str(history_file)),
-        completer=JediCompleter(namespace=namespace),
+        auto_suggest=AutoSuggestFromHistory(),
         lexer=PygmentsLexer(PythonLexer),
         style=ALCHEMIST_STYLE,
     )
