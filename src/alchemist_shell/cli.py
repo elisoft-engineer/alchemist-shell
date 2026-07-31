@@ -1,57 +1,53 @@
+import ast
 import asyncio
-import os
-import sys
-from pathlib import Path
 from functools import wraps
-from typing import Optional, Dict, Any, Type
+from pathlib import Path
+from typing import Any, Dict, Optional, Type
 
 import nest_asyncio
 import typer
-from IPython.terminal.embed import InteractiveShellEmbed
-from IPython.terminal.prompts import Prompts
-from pygments.token import Token
-from traitlets.config import Config
+from pygments.lexers.python import PythonLexer
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.engine import Row
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.lexers import PygmentsLexer
+from prompt_toolkit.styles import Style
+
+from alchemist_shell.completers import JediCompleter
 
 nest_asyncio.apply()
 
-from sqlalchemy import select, insert, update, delete, func, and_, or_, not_, desc, asc, text
+from sqlalchemy import (
+    and_,
+    asc,
+    delete,
+    desc,
+    func,
+    insert,
+    not_,
+    or_,
+    select,
+    text,
+    update,
+)
 
 from .discovery import discover_models
-from .inspect import inspect_model, inspect_collection
+from .inspect import inspect_collection, inspect_model
 from .session import get_session
 
 console = Console()
 app = typer.Typer(name="alchemist", help="The Modern SQLAlchemy Shell")
 
-
-# --- OS-aware IPython color profile ---
-def get_ipython_colors():
-    if sys.platform.startswith("win"):
-        return "neutral"  # Windows terminals can be inconsistent
-    if "TERM" in os.environ and "256color" in os.environ["TERM"]:
-        return "linux"
-    return "neutral"
-
-
-class AlchemistPrompts(Prompts):
-    def in_prompt_tokens(self):
-        return [(Token.Prompt, "alchemist "), (Token.PromptMarker, "❯ ")]
-
-    def out_prompt_tokens(self):
-        return []
-
-    def continuation_prompt_tokens(
-        self,
-        width: Optional[int] = None,
-        *,
-        lineno: Optional[int] = None,
-        wrap_count: Optional[int] = None,
-    ):
-        return [(Token.Prompt, "        ❯ ")]
+# Custom prompt_toolkit styling
+ALCHEMIST_STYLE = Style.from_dict({
+    "prompt": "bold #98c379",
+    "marker": "bold #61afef",
+})
 
 
 def make_sync_proxy(db: AsyncSession) -> Any:
@@ -62,7 +58,6 @@ def make_sync_proxy(db: AsyncSession) -> Any:
         def __getattr__(self, name: str) -> Any:
             attr = getattr(self._obj, name)
             if callable(attr):
-
                 @wraps(attr)
                 def wrapper(*args: Any, **kwargs: Any) -> Any:
                     result = attr(*args, **kwargs)
@@ -71,47 +66,100 @@ def make_sync_proxy(db: AsyncSession) -> Any:
                             asyncio.get_running_loop()
                             return result
                         except RuntimeError:
-                            # ─── PYTHON 3.14+ NEST_ASYNCIO TIMEOUT PATCH ───
-                            orig_current_task = asyncio.current_task
-
-                            class DummyTask:
-                                def cancel(self, *args, **kwargs):
-                                    return False
-
-                                def cancelling(self):
-                                    return 0
-
-                                def uncancel(self):
-                                    return 0
-
-                            # Provide a structural fallback if Python 3.14 returns None
-                            patched_task_provider = lambda loop=None: (
-                                orig_current_task(loop) or DummyTask()
-                            )
-
-                            asyncio.current_task = patched_task_provider
-                            if hasattr(asyncio, "tasks"):
-                                asyncio.tasks.current_task = patched_task_provider
-
-                            try:
-                                return asyncio.get_event_loop().run_until_complete(result)
-                            finally:
-                                # Revert back safely to avoid global side-effects
-                                asyncio.current_task = orig_current_task
-                                if hasattr(asyncio, "tasks"):
-                                    asyncio.tasks.current_task = orig_current_task
+                            loop = asyncio.get_event_loop()
+                            return loop.run_until_complete(result)
                     return result
-
                 return wrapper
             return attr
 
     return AsyncProxy(db)
 
 
+def display_result(result: Any) -> None:
+    """Renders execution results using Alchemist rich inspectors or standard repr."""
+    if result is None:
+        return
+
+    # 1. Collections of models or single-element rows (lists, tuples, ScalarResults, etc.)
+    items = (
+        list(result)
+        if hasattr(result, "__iter__")
+        and not isinstance(result, (str, bytes, dict, Row))
+        and not hasattr(result, "__table__")
+        else None
+    )
+
+    if items and len(items) > 0:
+        first = items[0]
+        is_model_row = (
+            isinstance(first, Row)
+            and len(first) == 1
+            and hasattr(first[0], "__table__")
+        )
+        if hasattr(first, "__table__") or is_model_row:
+            inspect_collection(items)
+            return
+
+    # 2. SQLAlchemy Rows
+    if isinstance(result, Row):
+        if len(result) == 1 and hasattr(result[0], "__table__"):
+            result = result[0]
+        else:
+            console.print(repr(result))
+            return
+
+    # 3. Single SQLAlchemy Model
+    if hasattr(result, "__table__"):
+        inspect_model(result)
+        return
+
+    # Default fallback
+    console.print(result)
+
+
+def execute_code(code_str: str, namespace: Dict[str, Any]) -> None:
+    """Executes code strings with support for top-level await and expression evaluation."""
+    code_str = code_str.strip()
+    if not code_str:
+        return
+
+    try:
+        # Try parsing as a single expression to print output automatically
+        parsed = ast.parse(code_str, mode="eval")
+        compiled = compile(parsed, "<alchemist>", "eval")
+        result = eval(compiled, namespace)
+        
+        # If the result is a coroutine, resolve it
+        if asyncio.iscoroutine(result):
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(result)
+            
+        display_result(result)
+        namespace["_"] = result
+
+    except SyntaxError:
+        # Fall back to executing multi-line statements / assignments
+        try:
+            # Handle top-level await by wrapping in an async block if needed
+            if "await " in code_str:
+                async_code = f"async def __alchemist_async_exec():\n" + "\n".join(
+                    f"    {line}" for line in code_str.splitlines()
+                )
+                exec(async_code, namespace)
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(namespace["__alchemist_async_exec"]())
+                namespace.pop("__alchemist_async_exec", None)
+            else:
+                exec(code_str, namespace)
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+
+
 def version_callback(value: bool):
     if value:
         from . import __version__
-
         console.print(f"Alchemist Shell v{__version__}")
         raise typer.Exit()
 
@@ -124,33 +172,6 @@ def common(
 ):
     """The Modern SQLAlchemy Shell."""
     pass
-
-
-# --- FINAL FORMATTER ---
-def alchemist_display_formatter(obj, p, cycle):
-    if cycle:
-        return p.text(repr(obj))
-
-    if isinstance(obj, list) and len(obj) > 0:
-        first = obj[0]
-        is_model_row = isinstance(first, Row) and len(first) == 1 and hasattr(first[0], "__table__")
-        if hasattr(first, "__table__") or is_model_row:
-            inspect_collection(obj)
-            return None
-
-    # Handle SQLAlchemy Row
-    if isinstance(obj, Row):
-        if len(obj) == 1 and hasattr(obj[0], "__table__"):
-            obj = obj[0]
-        else:
-            return p.text(repr(obj))
-
-    # Handle SQLAlchemy model instances
-    if hasattr(obj, "__table__"):
-        inspect_model(obj)
-        return None
-
-    return p.text(repr(obj))
 
 
 @app.command()
@@ -170,17 +191,6 @@ def shell(
 
     is_async = isinstance(db, AsyncSession)
     mode_label = "ASYNC" if is_async else "SYNC"
-
-    cfg = Config()
-    cfg.InteractiveShell.autoawait = True
-    cfg.InteractiveShell.quiet = True
-    cfg.TerminalInteractiveShell.display_banner = False
-    cfg.TerminalInteractiveShell.display_completions = "readline"
-    cfg.TerminalInteractiveShell.prompts_class = AlchemistPrompts
-    cfg.TerminalInteractiveShell.term_title = False
-    cfg.IPCompleter.greedy = True
-    cfg.TerminalInteractiveShell.autosuggestions_provider = "NavigableAutoSuggestFromHistory"
-    cfg.IPCompleter.use_jedi = True
 
     active_db = make_sync_proxy(db) if is_async else db
 
@@ -205,20 +215,7 @@ def shell(
         **models,
     }
 
-    ipshell = InteractiveShellEmbed(
-        config=cfg, user_ns=namespace, colors=get_ipython_colors(), banner1=""
-    )
-
-    formatter = ipshell.display_formatter.formatters["text/plain"]
-
-    # Register formatter for models
-    for model_cls in models.values():
-        formatter.for_type(model_cls, alchemist_display_formatter)
-
-    formatter.for_type(Row, alchemist_display_formatter)
-    formatter.for_type(list, alchemist_display_formatter)
-
-    # --- UI ---
+    # Print Header Table
     table = Table(show_header=True, header_style="bold blue", box=None)
     table.add_column("Model", style="magenta")
     table.add_column("Table", style="dim")
@@ -238,13 +235,23 @@ def shell(
     )
 
     history_file = Path.home() / ".alchemist_history"
-    if not history_file.exists():
-        history_file.touch()
 
-    ipshell.history_manager.hist_file = str(history_file)
-    ipshell.history_manager.enabled = True
+    session = PromptSession(
+        history=FileHistory(str(history_file)),
+        completer=JediCompleter(namespace=namespace),
+        lexer=PygmentsLexer(PythonLexer),
+        style=ALCHEMIST_STYLE,
+    )
 
-    ipshell()
+    prompt_message = HTML("<prompt>alchemist</prompt> <marker>❯</marker> ")
+
+    while True:
+        try:
+            user_input = session.prompt(prompt_message)
+            execute_code(user_input, namespace)
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Goodbye![/dim]")
+            break
 
 
 def main():
