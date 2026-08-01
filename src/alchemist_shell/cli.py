@@ -27,7 +27,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import Row
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from .discovery import discover_models
 from .inspect import inspect_collection, inspect_model
@@ -44,6 +44,12 @@ ALCHEMIST_STYLE = Style.from_dict(
 )
 
 
+class ExitShellException(Exception):
+    """Custom exception to trigger clean shell shutdown."""
+
+    pass
+
+
 def display_result(result: Any) -> None:
     """Renders execution results using Alchemist rich inspectors or standard repr."""
     if result is None:
@@ -58,7 +64,11 @@ def display_result(result: Any) -> None:
     )
     if items and len(items) > 0:
         first = items[0]
-        is_model_row = isinstance(first, Row) and len(first) == 1 and hasattr(first[0], "__table__")
+        is_model_row = (
+            isinstance(first, Row)
+            and len(first) == 1
+            and hasattr(first[0], "__table__")
+        )
         if hasattr(first, "__table__") or is_model_row:
             inspect_collection(items)
             return
@@ -78,36 +88,46 @@ def display_result(result: Any) -> None:
 
 
 async def execute_code_async(code_str: str, namespace: Dict[str, Any]) -> None:
-    """Executes code strings inside an active asyncio Task context."""
+    """Executes code strings inside an active asyncio Task context with proper namespace persistence."""
     code_str = code_str.strip()
     if not code_str:
         return
+
+    # Direct exit shortcuts
+    if code_str in ("exit", "exit()", "quit", "quit()"):
+        raise ExitShellException()
+
     try:
-        # Try parsing as a single expression
-        parsed = ast.parse(code_str, mode="eval")
-        compiled = compile(parsed, "<alchemist>", "eval")
-        result = eval(compiled, namespace)
-        
-        # Await coroutines directly within the running task
-        if asyncio.iscoroutine(result):
-            result = await result
-            
-        display_result(result)
-        namespace["_"] = result
-    except SyntaxError:
-        # Fall back to multi-line statements / top-level await execution
-        try:
-            async_code = "async def __alchemist_async_exec():\n" + "\n".join(
-                f"    {line}" for line in code_str.splitlines()
-            )
-            exec(async_code, namespace)
-            func = namespace.pop("__alchemist_async_exec")
-            result = await func()
-            if result is not None:
-                display_result(result)
-                namespace["_"] = result
-        except Exception as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
+        tree = ast.parse(code_str, mode="exec")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        return
+
+    has_expr = False
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        last_expr = tree.body[-1]
+        tree.body[-1] = ast.Assign(
+            targets=[ast.Name(id="_alchemist_out", ctx=ast.Store())],
+            value=last_expr.value,
+        )
+        ast.fix_missing_locations(tree)
+        has_expr = True
+
+    try:
+        compiled = compile(
+            tree, "<alchemist>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+        )
+        res = eval(compiled, namespace)
+
+        if asyncio.iscoroutine(res):
+            await res
+
+        if has_expr and "_alchemist_out" in namespace:
+            out = namespace.pop("_alchemist_out")
+            if asyncio.iscoroutine(out):
+                out = await out
+            display_result(out)
+            namespace["_"] = out
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
 
@@ -172,18 +192,38 @@ async def run_shell_async(db_url: Optional[str], path: str, env: Optional[str]) 
     )
     prompt_message = HTML("<prompt>alchemist</prompt> <marker>❯</marker> ")
 
-    while True:
-        try:
-            user_input = await session.prompt_async(prompt_message)
-            await execute_code_async(user_input, namespace)
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Goodbye![/dim]")
-            break
+    try:
+        while True:
+            try:
+                user_input = await session.prompt_async(prompt_message)
+                await execute_code_async(user_input, namespace)
+            except ExitShellException:
+                console.print("[dim]Goodbye![/dim]")
+                break
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Goodbye![/dim]")
+                break
+    finally:
+        if is_async:
+            await db.close()
+            if isinstance(engine, AsyncEngine):
+                await engine.dispose()
+        else:
+            db.close()
+            engine.dispose()
+
+        current_task = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current_task]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 def version_callback(value: bool):
     if value:
         from . import __version__
+
         console.print(f"Alchemist Shell v{__version__}")
         raise typer.Exit()
 
