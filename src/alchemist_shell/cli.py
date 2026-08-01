@@ -103,6 +103,15 @@ async def execute_code_async(code_str: str, namespace: Dict[str, Any]) -> None:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return
 
+    # Collect variable names target of assignment statements
+    assigned_names = [
+        target.id
+        for stmt in tree.body
+        if isinstance(stmt, ast.Assign)
+        for target in stmt.targets
+        if isinstance(target, ast.Name)
+    ]
+
     has_expr = False
     if tree.body and isinstance(tree.body[-1], ast.Expr):
         last_expr = tree.body[-1]
@@ -121,6 +130,12 @@ async def execute_code_async(code_str: str, namespace: Dict[str, Any]) -> None:
 
         if asyncio.iscoroutine(res):
             await res
+
+        # Auto-await any coroutines assigned to variables
+        for name in assigned_names:
+            val = namespace.get(name)
+            if asyncio.iscoroutine(val):
+                namespace[name] = await val
 
         if has_expr and "_alchemist_out" in namespace:
             out = namespace.pop("_alchemist_out")
