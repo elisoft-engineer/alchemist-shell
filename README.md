@@ -33,8 +33,11 @@ The current workflow for inspecting SQLAlchemy projects in the terminal is broke
 - **Auto-Formatting**  
   Model instances render as high-fidelity `rich` tables when evaluated.
 
+- **Auto-Awaiting**  
+  Call async functions and methods without having to type await before them. They are "autoawaited".
+
 - **Modern Shell**  
-  Powered by IPython with completion, syntax highlighting, and history-based autosuggestions.
+  Powered by Prompt Toolkit with completion, syntax highlighting, and history-based autosuggestions.
 
 ---
 
@@ -84,16 +87,19 @@ alchemist ❯ user
 Full auto-await support when you need complex queries:
 
 ```python
-alchemist ❯ results = await db.execute(select(Order))
+alchemist ❯ results = db.execute(select(Order))
 alchemist ❯ orders = results.scalars().all()
 ```
+
+Async functions are detected and awaited during code execution. For example:
+`results = db.execute(select(Order))` yields the same result as `results = await db.execute(select(Order))` rather than returning a `Coroutine`.
 
 ---
 
 ## 📜 License
 
-MIT License. Permissive and simple.
+This project is licensed under MIT License. See the [LICENSE](LICENSE) file for full details.
 
 ---
 
-**Built to make SQLAlchemy development suck less.**
+**Built to make SQLAlchemy development FUN!**
